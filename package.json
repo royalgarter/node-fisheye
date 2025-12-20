@@ -6,8 +6,10 @@
   "scripts": {
     "build:dev": "node-gyp -j 8 rebuild --debug",
     "build": "node-gyp -j 8 rebuild",
+    "build:cli": "g++ -std=c++17 src/cli.cc -o fisheye $(node utils/find-opencv.js --cflags) $(node utils/find-opencv.js --libs)",
     "clean": "node-gyp clean",
     "example": "node example/index.js example/samples/IMG-0.jpg out.jpg",
+    "example:cli": "./fisheye example/samples/IMG-0.jpg out.jpg example/samples 9 6",
     "install:opencv": "sudo apt install libopencv-dev python3-opencv"
   },
   "keywords": [
