@@ -4,7 +4,7 @@
   "description": "A opencv fisheye camera model bindings for Node.js",
   "main": "index.js",
   "bin": {
-    "fisheye-js": "index.js"
+    "fisheyejs": "index.js"
   },
   "scripts": {
     "build:dev": "node-gyp -j 8 rebuild --debug",
