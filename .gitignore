@@ -3,3 +3,5 @@ build
 *.log
 out_cli.jpg
 fisheye
+data
+out_js.jpg

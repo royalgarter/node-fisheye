@@ -3,6 +3,9 @@
   "version": "0.1.3",
   "description": "A opencv fisheye camera model bindings for Node.js",
   "main": "index.js",
+  "bin": {
+    "fisheye-js": "index.js"
+  },
   "scripts": {
     "build:dev": "node-gyp -j 8 rebuild --debug",
     "build": "node-gyp -j 8 rebuild",
@@ -10,6 +13,7 @@
     "clean": "node-gyp clean",
     "example": "node example/index.js example/samples/IMG-0.jpg out.jpg",
     "example:cli": "./fisheye example/samples/IMG-0.jpg out.jpg example/samples 9 6",
+    "example:js": "node index.js example/samples/IMG-0.jpg out_js.jpg example/samples 9 6",
     "install:opencv": "sudo apt install libopencv-dev python3-opencv"
   },
   "keywords": [
