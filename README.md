@@ -47,6 +47,11 @@ set PATH=%PATH%;c:\mingw64\bin\;C:\Program Files\CMake\bin;c:\opencv\x64\mingw\b
 set OPENCV_DIR=c:\opencv\
 ```
 
+Required MinGW DLL (in case moving executable to other machine):
+- libstdc++-6.dll
+- libgcc_s_seh-1.dll
+- libwinpthread-1.dll
+
 Required OpenCV DLL (in case moving executable to other machine):
 - libopencv_calib3d455.dll
 - libopencv_core455.dll

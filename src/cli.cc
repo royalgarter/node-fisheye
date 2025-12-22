@@ -21,17 +21,40 @@ std::vector<cv::Point3f> calibratePattern(cv::Size checkboardSize, float squareS
     return ret;
 }
 
-int main(int argc, char** argv) {
-    if (argc != 6) {
-        std::cout << "Usage: ./fisheye <src_image> <dest_image> <samples_dir> <checkboard_width> <checkboard_height>" << std::endl;
-        return 1;
-    }
+std::string promptForInput(const std::string& message) {
+    std::cout << message;
+    std::string input;
+    std::getline(std::cin, input);
+    return input;
+}
 
-    std::string srcPath = argv[1];
-    std::string destPath = argv[2];
-    std::string samplesDir = argv[3];
-    int checkboardWidth = std::stoi(argv[4]);
-    int checkboardHeight = std::stoi(argv[5]);
+int main(int argc, char** argv) {
+    std::string srcPath, destPath, samplesDir;
+    int checkboardWidth, checkboardHeight;
+    bool interactiveMode = false;
+
+    if (argc > 1 && (std::string(argv[1]) == "--interactive" || std::string(argv[1]) == "-i")) {
+        interactiveMode = true;
+        std::cout << "Entering interactive mode. Please provide the following inputs:" << std::endl;
+
+        srcPath = promptForInput("Enter source image path: ");
+        destPath = promptForInput("Enter destination image path: ");
+        samplesDir = promptForInput("Enter samples directory path: ");
+        checkboardWidth = std::stoi(promptForInput("Enter checkboard width: "));
+        checkboardHeight = std::stoi(promptForInput("Enter checkboard height: "));
+    } else {
+        if (argc != 6) {
+            std::cout << "Usage: ./fisheye <src_image> <dest_image> <samples_dir> <checkboard_width> <checkboard_height>" << std::endl;
+            std::cout << "Or for interactive mode: ./fisheye --interactive or ./fisheye -i" << std::endl;
+            return 1;
+        }
+
+        srcPath = argv[1];
+        destPath = argv[2];
+        samplesDir = argv[3];
+        checkboardWidth = std::stoi(argv[4]);
+        checkboardHeight = std::stoi(argv[5]);
+    }
 
     // 1. Load Calibration Images
     std::vector<cv::Mat> images;
@@ -110,6 +133,8 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to save image to " << destPath << std::endl;
         return 1;
     }
+
+    std::system("pause");
 
     return 0;
 }
