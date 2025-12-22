@@ -4,11 +4,19 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include <iostream>
+#include <fstream>
 #include <vector>
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <algorithm>
 #include <cctype>
+
+namespace fs = std::filesystem;
+
+// #define WINGUI
+
+#ifdef WINGUI
 
 #include <windows.h> // For Windows GUI
 #include <commctrl.h> // For common controls like edit boxes
@@ -17,8 +25,6 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "Comctl32.lib") // For InitCommonControlsEx
-
-namespace fs = std::filesystem;
 
 // --- WINDOWS GUI GLOBALS AND CONSTANTS ---
 // Control IDs
@@ -202,6 +208,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
+#endif
 
 // --- EXISTING CALIBRATION LOGIC ---
 
@@ -223,9 +230,15 @@ std::string promptForInput(const std::string& message) {
 }
 
 int main(int argc, char** argv) {
-    std::string srcPath, destPath, samplesDir;
-    int checkboardWidth, checkboardHeight;
-    bool useGui = false;
+    std::string srcPath, destPath, samplesDir, configFile, param3;
+    int checkboardWidth = 0, checkboardHeight = 0;
+    bool useGui = false, useTui = false;
+    bool calibrationNeeded = true; // Default for GUI/Interactive
+    bool exportCalibration = false;
+    bool importCalibration = false;
+
+    auto tik = std::chrono::high_resolution_clock::now();
+    auto tok = std::chrono::high_resolution_clock::now();
 
     // Check for GUI flag
     if (argc > 1 && std::string(argv[1]) == "-gui") {
@@ -233,154 +246,253 @@ int main(int argc, char** argv) {
     }
 
     if (useGui) {
+        #ifdef WINGUI
         std::cout << "Launching GUI..." << std::endl;
         // The main function will not exit until the GUI window is closed.
         // It relies on g_guiSubmitted and g_guiCancelled globals set by WndProc.
-        if (!runWinGuiMode(srcPath, destPath, samplesDir, checkboardWidth, checkboardHeight)) {
+        if (!runWinGuiMode(srcPath, destPath, param3, checkboardWidth, checkboardHeight)) {
             std::cout << "GUI cancelled or exited." << std::endl;
             return 0; // Exit if GUI was cancelled or failed to initialize
         }
-    }
-    else if (argc > 1 && (std::string(argv[1]) == "--interactive" || std::string(argv[1]) == "-i")) {
+        #endif
+    } else if (argc > 1 && (std::string(argv[1]) == "--interactive" || std::string(argv[1]) == "-i")) {
         std::cout << "Entering interactive mode. Please provide the following inputs:" << std::endl;
-        srcPath = promptForInput("Enter source image path: ");
-        destPath = promptForInput("Enter destination image path: ");
-        samplesDir = promptForInput("Enter samples directory path: ");
-        checkboardWidth = std::stoi(promptForInput("Enter checkboard width: "));
-        checkboardHeight = std::stoi(promptForInput("Enter checkboard height: "));
+
+        srcPath = promptForInput("1. Enter source directory: ");
+        destPath = promptForInput("2. Enter destination directory: ");
+        param3 = promptForInput("3. Enter checkboard samples directory path: ");
+
+        checkboardWidth = std::stoi(promptForInput("4. Enter checkboard width: "));
+        checkboardHeight = std::stoi(promptForInput("5. Enter checkboard height: "));
+
+        useTui = true;
     } else {
-        if (argc < 6 || argc > 7) { // 6 arguments for normal, 7 if first is -gui (which is handled above)
-            std::cout << "Usage: ./fisheye <src_image> <dest_image> <samples_dir> <checkboard_width> <checkboard_height>" << std::endl;
-            std::cout << "Or: ./fisheye -i (Interactive Mode)" << std::endl;
-            std::cout << "Or: ./fisheye -gui (Window Mode)" << std::endl;
-            return 1;
-        }
-        // Handle direct arguments if not GUI or interactive
-        int argOffset = 0; // No offset if not -gui
-        if (std::string(argv[1]) == "-gui") { // If -gui is present but not handled (e.g. if more args given later)
-            std::cerr << "Error: -gui option should be used alone. Exiting." << std::endl;
-            return 1;
+        if (argc < 4) {
+             std::cout << "USAGE: ./fisheye <src_dir> <dest_dir> <checkboard_dir> <checkboard_width> <checkboard_height>" << std::endl;
+             std::cout << "   Or: ./fisheye <src_dir> <dest_dir> <calibration_file> <checkboard_width> <checkboard_height> (Export Mode)" << std::endl;
+             std::cout << "   Or: ./fisheye <src_dir> <dest_dir> <calibration_file> (Import Mode)" << std::endl;
+             std::cout << "   Or: ./fisheye -i (Interactive Mode)" << std::endl;
+             std::cout << "   Or: ./fisheye -gui (Window Mode)" << std::endl;
+             return 1;
         }
 
         srcPath = argv[1];
         destPath = argv[2];
-        samplesDir = argv[3];
-        checkboardWidth = std::stoi(argv[4]);
-        checkboardHeight = std::stoi(argv[5]);
+        param3 = argv[3];
     }
 
-    // 1. Load Calibration Images
-    std::vector<cv::Mat> images;
-    std::cout << "Loading samples from " << samplesDir << "..." << std::endl;
-    
-    if (!fs::exists(samplesDir)) {
-        std::cerr << "Error: Samples directory '" << samplesDir << "' not found." << std::endl;
-        return 1;
-    }
+    if (fs::is_directory(param3)) {
+        // Case 1: Folder path (Standard Calibration)
+        if (checkboardWidth == 0 || checkboardHeight == 0) {
+            std::cerr << "Error: Missing width/height for calibration folder mode." << std::endl;
+            return 1;
+        }
+        samplesDir = param3;
 
-    for (const auto& entry : fs::directory_iterator(samplesDir)) {
-        std::string p = entry.path().string();
-        std::string ext = entry.path().extension().string();
-        // Convert ext to lowercase for comparison
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c){ return std::tolower(c); });
+        if (useTui == false) {
+            checkboardWidth = std::stoi(argv[4]);
+            checkboardHeight = std::stoi(argv[5]);
+        }
 
-        // Simple check for jpg/png
-        if (ext == ".jpg" || ext == ".png" || ext == ".jpeg" || ext == ".bmp") {
-            cv::Mat img = cv::imread(p, cv::IMREAD_GRAYSCALE);
-            if (!img.empty()) {
-                images.push_back(img);
+        calibrationNeeded = true;
+    } else {
+        // Case 2: Filename
+        configFile = param3;
+        if (argc >= 6) {
+            // Case 2.1: Export
+            // Assuming srcPath is the sample source as well since samplesDir arg is used for config
+            samplesDir = std::filesystem::path(configFile).parent_path();
+
+            if (useTui == false) {
+                checkboardWidth = std::stoi(argv[4]);
+                checkboardHeight = std::stoi(argv[5]);
             }
+
+            calibrationNeeded = true;
+            exportCalibration = true;
+        } else {
+            // Case 2.2: Import
+            calibrationNeeded = false;
+            importCalibration = true;
         }
-    }
-
-    if (images.empty()) {
-        std::cerr << "No images found in " << samplesDir << std::endl;
-        if(useGui) std::system("pause"); // Keep window open to see error
-        return 1;
-    }
-    std::cout << "Loaded " << images.size() << " images." << std::endl;
-
-    // 2. Calibrate
-    std::cout << "Calibrating..." << std::endl;
-    cv::Size checkboardSize(checkboardWidth, checkboardHeight);
-    std::vector<std::vector<cv::Point3f>> objPoints;
-    std::vector<cv::Mat> imgPoints;
-    std::vector<cv::Point3f> pattern = calibratePattern(checkboardSize, 1.0);
-    cv::TermCriteria subpixCriteria(cv::TermCriteria::EPS | cv::TermCriteria::MAX_ITER, 30, 0.1);
-
-    for (auto& img : images) {
-        cv::Mat corners;
-        // Use CALIB_CB_ADAPTIVE_THRESH for better robustness
-        bool found = cv::findChessboardCorners(img, checkboardSize, corners,
-            cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
-
-        if (found) {
-            objPoints.push_back(pattern);
-            cv::cornerSubPix(img, corners, cv::Size(3, 3), cv::Size(-1, -1), subpixCriteria);
-            imgPoints.push_back(corners);
-        }
-    }
-
-    if (objPoints.empty()) {
-        std::cerr << "Could not detect any checkboards with size " << checkboardWidth << "x" << checkboardHeight << std::endl;
-        if(useGui) std::system("pause");
-        return 1;
     }
 
     cv::Matx33d K;
     cv::Vec4d D;
-    cv::Size size = images[0].size();
-    int flag = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC | cv::fisheye::CALIB_CHECK_COND | cv::fisheye::CALIB_FIX_SKEW;
-    cv::TermCriteria criteria(cv::TermCriteria::EPS | cv::TermCriteria::MAX_ITER, 30, 1e-6);
-    
-    double error = cv::fisheye::calibrate(objPoints, imgPoints, size, K, D, cv::noArray(), cv::noArray(), flag, criteria);
-    std::cout << "Calibration done. Reprojection error: " << error << std::endl;
 
-    // 3. Undistort
-    std::cout << "Undistorting " << srcPath << "..." << std::endl;
-    cv::Mat distorted = cv::imread(srcPath);
-    if (distorted.empty()) {
-        std::cerr << "Failed to read source image: " << srcPath << std::endl;
-        if(useGui) std::system("pause");
+    if (calibrationNeeded) {
+        // 1. Load Calibration Images
+        std::vector<cv::Mat> images;
+        std::cout << "Loading samples from " << samplesDir << "..." << std::endl;
+
+        if (!fs::exists(samplesDir)) {
+            std::cerr << "Error: Samples directory '" << samplesDir << "' not found." << std::endl;
+            return 1;
+        }
+
+        for (const auto& entry : fs::directory_iterator(samplesDir)) {
+            std::string p = entry.path().string();
+            std::string ext = entry.path().extension().string();
+            // Convert ext to lowercase for comparison
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c){ return std::tolower(c); });
+
+            // Simple check for jpg/png
+            if (ext == ".jpg" || ext == ".png" || ext == ".jpeg" || ext == ".bmp") {
+                cv::Mat img = cv::imread(p, cv::IMREAD_GRAYSCALE);
+                if (!img.empty()) {
+                    images.push_back(img);
+                }
+            }
+        }
+
+        if (images.empty()) {
+            std::cerr << "No images found in " << samplesDir << std::endl;
+            if (useGui) std::system("pause"); // Keep window open to see error
+            return 1;
+        }
+        std::cout << "Loaded " << images.size() << " images." << std::endl;
+
+        // 2. Calibrate
+        std::cout << "Calibrating..." << std::endl;
+        cv::Size checkboardSize(checkboardWidth, checkboardHeight);
+        std::vector<std::vector<cv::Point3f>> objPoints;
+        std::vector<cv::Mat> imgPoints;
+        std::vector<cv::Point3f> pattern = calibratePattern(checkboardSize, 1.0);
+        cv::TermCriteria subpixCriteria(cv::TermCriteria::EPS | cv::TermCriteria::MAX_ITER, 30, 0.1);
+
+        for (auto& img : images) {
+            cv::Mat corners;
+            // Use CALIB_CB_ADAPTIVE_THRESH for better robustness
+            tik = std::chrono::high_resolution_clock::now();
+            bool found = cv::findChessboardCorners(img, checkboardSize, corners,
+                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
+
+            if (found) {
+                objPoints.push_back(pattern);
+                cv::cornerSubPix(img, corners, cv::Size(3, 3), cv::Size(-1, -1), subpixCriteria);
+                imgPoints.push_back(corners);
+            }
+
+            tok = std::chrono::high_resolution_clock::now();
+            std::cout << "findChessboardCorners: " << std::chrono::duration_cast<std::chrono::milliseconds>(tok - tik).count() << std::endl;
+        }
+
+        if (objPoints.empty()) {
+            std::cerr << "Could not detect any checkboards with size " << checkboardWidth << "x" << checkboardHeight << std::endl;
+            if (useGui) std::system("pause");
+            return 1;
+        }
+
+        cv::Size size = images[0].size();
+        int flag = cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC | cv::fisheye::CALIB_CHECK_COND | cv::fisheye::CALIB_FIX_SKEW;
+        cv::TermCriteria criteria(cv::TermCriteria::EPS | cv::TermCriteria::MAX_ITER, 30, 1e-6);
+
+        tik = std::chrono::high_resolution_clock::now();
+        double error = cv::fisheye::calibrate(objPoints, imgPoints, size, K, D, cv::noArray(), cv::noArray(), flag, criteria);
+        tok = std::chrono::high_resolution_clock::now();
+
+        std::cout << "Calibration done. Reprojection error: " << error << "Time: " << std::chrono::duration_cast<std::chrono::milliseconds>(tok - tik).count() << std::endl;
+
+        if (exportCalibration) {
+            std::cout << "Exporting calibration data to " << configFile << "..." << std::endl;
+            std::ofstream out(configFile);
+            if (out.is_open()) {
+                out << K(0, 0) << " " << K(1, 1) << " " << K(0, 2) << " " << K(1, 2) << std::endl;
+                out << D[0] << " " << D[1] << " " << D[2] << " " << D[3] << std::endl;
+                out.close();
+                std::cout << "Export successful." << std::endl;
+            } else {
+                std::cerr << "Error: Could not open file for writing: " << configFile << std::endl;
+            }
+        }
+
+    } else if (importCalibration) {
+        std::cout << "Importing calibration data from " << configFile << "..." << std::endl;
+        std::ifstream in(configFile);
+        if (in.is_open()) {
+            double fx, fy, cx, cy;
+            if (in >> fx >> fy >> cx >> cy) {
+                K = cv::Matx33d::eye();
+                K(0, 0) = fx; K(1, 1) = fy; K(0, 2) = cx; K(1, 2) = cy;
+            } else {
+                 std::cerr << "Error reading K matrix." << std::endl;
+                 return 1;
+            }
+            if (!(in >> D[0] >> D[1] >> D[2] >> D[3])) {
+                 std::cerr << "Error reading D coefficients." << std::endl;
+                 return 1;
+            }
+            in.close();
+            std::cout << "Import successful." << std::endl;
+        } else {
+            std::cerr << "Error: Could not open file for reading: " << configFile << std::endl;
+            return 1;
+        }
+    }
+
+    // 3. Undistort & 4. Save
+    std::cout << "Undistorting images from " << srcPath << " to " << destPath << "..." << std::endl;
+
+    if (!fs::exists(srcPath) || !fs::is_directory(srcPath)) {
+        std::cerr << "Error: Source path '" << srcPath << "' is not a directory." << std::endl;
+        if (useGui) std::system("pause");
         return 1;
     }
 
-    cv::Mat undistorted;
-    // K is used for both original and new camera matrix to keep the scale
-    cv::fisheye::undistortImage(distorted, undistorted, K, D, K, distorted.size());
+    if (!fs::exists(destPath)) {
+        if (!fs::create_directories(destPath)) {
+            std::cerr << "Error: Could not create destination directory '" << destPath << "'." << std::endl;
+            if (useGui) std::system("pause");
+            return 1;
+        }
+    } else if (!fs::is_directory(destPath)) {
+        std::cerr << "Error: Destination path '" << destPath << "' is not a directory." << std::endl;
+        if (useGui) std::system("pause");
+        return 1;
+    }
 
-        // 4. Save
+    int count = 0;
+    for (const auto& entry : fs::directory_iterator(srcPath)) {
+        std::string p = entry.path().string();
+        if (!entry.is_regular_file()) continue;
 
-        if (cv::imwrite(destPath, undistorted)) {
+        std::string ext = entry.path().extension().string();
+        std::string filename = entry.path().stem().string();
 
-            std::cout << "Saved to " << destPath << std::endl;
+        std::string ext_lower = ext;
+        std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(),
+                       [](unsigned char c){ return std::tolower(c); });
 
-            // Show result if in GUI mode
-
-            if (useGui) {
-
-                // In WinAPI GUI mode, we should perhaps show the image in a new window
-
-                // or inform the user it's saved. For simplicity, just confirmation.
-
-                MessageBox(nullptr, ("Image saved to: " + destPath).c_str(), "Success", MB_OK | MB_ICONINFORMATION);
-
+        if (ext_lower == ".jpg" || ext_lower == ".png" || ext_lower == ".jpeg" || ext_lower == ".bmp") {
+            cv::Mat distorted = cv::imread(p);
+            if (distorted.empty()) {
+                std::cerr << "Failed to read image: " << p << std::endl;
+                continue;
             }
 
-        } else {
+            cv::Mat undistorted;
+            // K is used for both original and new camera matrix to keep the scale
+            tik = std::chrono::high_resolution_clock::now();
+            cv::fisheye::undistortImage(distorted, undistorted, K, D, K, distorted.size());
+            tok = std::chrono::high_resolution_clock::now();
 
-            std::cerr << "Failed to save image to " << destPath << std::endl;
+            std::cout << "Time: " << std::chrono::duration_cast<std::chrono::milliseconds>(tok - tik).count() << std::endl;
 
-            if(useGui) MessageBox(nullptr, ("Failed to save image to: " + destPath).c_str(), "Error", MB_OK | MB_ICONERROR);
+            std::string outFilename = filename + "_undistored" + ext;
+            fs::path outPath = fs::path(destPath) / outFilename;
 
-            return 1;
-
+            if (cv::imwrite(outPath.string(), undistorted)) {
+                std::cout << "Saved to " << outPath.string() << std::endl;
+                count++;
+            } else {
+                std::cerr << "Failed to save to " << outPath.string() << std::endl;
+            }
         }
-
-
-
-        return 0;
-
     }
+    std::cout << "Processed " << count << " images." << std::endl;
+
+    if (useGui) std::system("pause");
+    return 0;
+}
 
