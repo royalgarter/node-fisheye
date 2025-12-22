@@ -2,7 +2,7 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
-#include <opencv2/highgui.hpp> // Added highgui header
+
 #include <iostream>
 #include <vector>
 #include <filesystem>
@@ -10,161 +10,198 @@
 #include <algorithm>
 #include <cctype>
 
+#include <windows.h> // For Windows GUI
+#include <commctrl.h> // For common controls like edit boxes
+
+// Link with libraries
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "Comctl32.lib") // For InitCommonControlsEx
+
 namespace fs = std::filesystem;
 
-// --- GUI HELPER STRUCTURES ---
-struct InputField {
-    std::string label;
-    std::string value;
-    cv::Rect rect;
-    bool isNumeric;
-};
+// --- WINDOWS GUI GLOBALS AND CONSTANTS ---
+// Control IDs
+#define IDC_SRC_PATH_EDIT 101
+#define IDC_DEST_PATH_EDIT 102
+#define IDC_SAMPLES_DIR_EDIT 103
+#define IDC_CHECKBOARD_WIDTH_EDIT 104
+#define IDC_CHECKBOARD_HEIGHT_EDIT 105
+#define IDC_START_BUTTON 106
 
-struct GuiState {
-    std::vector<InputField> fields;
-    cv::Rect buttonRect;
-    int activeFieldIndex = -1;
-    bool submitted = false;
-    bool shouldExit = false;
-};
+// Global handles for controls and data storage
+HWND hSrcPathEdit, hDestPathEdit, hSamplesDirEdit, hWidthEdit, hHeightEdit;
+std::string g_srcPath, g_destPath, g_samplesDir;
+int g_checkboardWidth, g_checkboardHeight;
+bool g_guiSubmitted = false;
+bool g_guiCancelled = false;
 
-// Mouse callback to handle clicking on fields and button
-void onMouse(int event, int x, int y, int flags, void* userdata) {
-    GuiState* state = (GuiState*)userdata;
-    if (event == cv::EVENT_LBUTTONDOWN) {
-        state->activeFieldIndex = -1; // Deselect
+// Forward declaration of WndProc
+LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
-        // Check Fields
-        for (size_t i = 0; i < state->fields.size(); ++i) {
-            if (state->fields[i].rect.contains(cv::Point(x, y))) {
-                state->activeFieldIndex = (int)i;
-                return;
-            }
-        }
+// Function to run the Windows GUI
+bool runWinGuiMode(std::string& src, std::string& dest, std::string& samples, int& w, int& h) {
+    // To ensure common controls are available
+    INITCOMMONCONTROLSEX icex;
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&icex);
 
-        // Check Submit Button
-        if (state->buttonRect.contains(cv::Point(x, y))) {
-            state->submitted = true;
-        }
-    }
-}
+    const char CLASS_NAME[] = "FisheyeCalibratorWindowClass";
 
-// Function to draw the form
-void drawForm(cv::Mat& canvas, const GuiState& state) {
-    canvas = cv::Scalar(50, 50, 50); // Dark grey background
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.lpszClassName = CLASS_NAME;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); // Set background color
 
-    int fontFace = cv::FONT_HERSHEY_SIMPLEX;
-    double fontScale = 0.5;
-    int thickness = 1;
-    int padding = 10;
-
-    for (size_t i = 0; i < state.fields.size(); ++i) {
-        const auto& f = state.fields[i];
-
-        // Draw Label
-        cv::putText(canvas, f.label, cv::Point(f.rect.x, f.rect.y - 8), fontFace, fontScale, cv::Scalar(200, 200, 200), thickness);
-
-        // Draw Input Box Background
-        cv::Scalar boxColor = (state.activeFieldIndex == (int)i) ? cv::Scalar(100, 100, 100) : cv::Scalar(70, 70, 70);
-        cv::Scalar borderColor = (state.activeFieldIndex == (int)i) ? cv::Scalar(0, 255, 0) : cv::Scalar(150, 150, 150);
-
-        cv::rectangle(canvas, f.rect, boxColor, cv::FILLED);
-        cv::rectangle(canvas, f.rect, borderColor, 1);
-
-        // Draw Value text
-        std::string displayParams = f.value;
-        // Simple cursor simulation
-        if (state.activeFieldIndex == (int)i) displayParams += "|";
-
-        // Clip text if too long (very basic clipping)
-        if (displayParams.length() > 55) displayParams = "..." + displayParams.substr(displayParams.length() - 52);
-
-        cv::putText(canvas, displayParams, cv::Point(f.rect.x + 5, f.rect.y + 20), fontFace, fontScale, cv::Scalar(255, 255, 255), thickness);
-    }
-
-    // Draw Button
-    cv::rectangle(canvas, state.buttonRect, cv::Scalar(200, 100, 0), cv::FILLED); // Blueish
-    cv::rectangle(canvas, state.buttonRect, cv::Scalar(255, 255, 255), 1);
-
-    std::string btnText = "START CALIBRATION";
-    int baseline = 0;
-    cv::Size txtSize = cv::getTextSize(btnText, fontFace, 0.7, 2, &baseline);
-    cv::Point textOrg((state.buttonRect.width - txtSize.width) / 2 + state.buttonRect.x,
-                      (state.buttonRect.height + txtSize.height) / 2 + state.buttonRect.y);
-    cv::putText(canvas, btnText, textOrg, fontFace, 0.7, cv::Scalar(255, 255, 255), 2);
-}
-
-bool runGuiMode(std::string& src, std::string& dest, std::string& samples, int& w, int& h) {
-    GuiState state;
-    int startY = 50;
-    int gapY = 60;
-    int width = 580;
-    int height = 30;
-    int startX = 30;
-
-    // Define Layout
-    state.fields.push_back({"Source Image Path", "example/samples/IMG-0.jpg", cv::Rect(startX, startY, width, height), false});
-    state.fields.push_back({"Destination Image Path", "undistorted.jpg", cv::Rect(startX, startY + gapY, width, height), false});
-    state.fields.push_back({"Samples Directory", "example/samples", cv::Rect(startX, startY + gapY*2, width, height), false});
-    state.fields.push_back({"Checkboard Width (cols)", "9", cv::Rect(startX, startY + gapY*3, width/2 - 10, height), true});
-    state.fields.push_back({"Checkboard Height (rows)", "6", cv::Rect(startX + width/2 + 10, startY + gapY*3, width/2 - 10, height), true});
-
-    state.buttonRect = cv::Rect(startX, startY + gapY * 4 + 20, width, 50);
-
-    cv::Mat canvas(400, 640, CV_8UC3);
-    cv::namedWindow("Fisheye Calibrator Input", cv::WINDOW_AUTOSIZE);
-    cv::setMouseCallback("Fisheye Calibrator Input", onMouse, &state);
-
-    while (!state.submitted) {
-        drawForm(canvas, state);
-        cv::imshow("Fisheye Calibrator Input", canvas);
-
-        int key = cv::waitKey(20);
-
-        // Check if window closed
-        if (cv::getWindowProperty("Fisheye Calibrator Input", cv::WND_PROP_AUTOSIZE) == -1) {
-            return false;
-        }
-
-        if (key == 27) return false; // ESC to exit
-
-        // Handle Text Input
-        if (state.activeFieldIndex >= 0 && key != -1) {
-            std::string& val = state.fields[state.activeFieldIndex].value;
-
-            if (key == 8) { // Backspace
-                if (!val.empty()) val.pop_back();
-            }
-            else if (key == 13) { // Enter
-                state.activeFieldIndex = -1; // confirm
-            }
-            else if (key >= 32 && key <= 126) { // Printable chars
-                // If numeric field, restrict input
-                if (state.fields[state.activeFieldIndex].isNumeric) {
-                    if (isdigit(key)) val += (char)key;
-                } else {
-                    val += (char)key;
-                }
-            }
-        }
-    }
-
-    cv::destroyWindow("Fisheye Calibrator Input");
-
-    // Assign back to variables
-    src = state.fields[0].value;
-    dest = state.fields[1].value;
-    samples = state.fields[2].value;
-    try {
-        w = std::stoi(state.fields[3].value);
-        h = std::stoi(state.fields[4].value);
-    } catch (...) {
-        std::cerr << "Invalid width/height provided via GUI." << std::endl;
+    if (!RegisterClassEx(&wc)) {
+        MessageBox(nullptr, "Window Registration Failed!", "Error", MB_ICONEXCLAMATION | MB_OK);
         return false;
     }
 
-    return true;
+    HWND hwnd = CreateWindowEx(
+        0,                              // Optional window style
+        CLASS_NAME,                     // Window class
+        "Fisheye Calibrator Input",     // Window text
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, // Window style
+        CW_USEDEFAULT, CW_USEDEFAULT,   // Position
+        660, 420,                       // Size (width, height)
+        nullptr,                        // Parent window
+        nullptr,                        // Menu
+        GetModuleHandle(nullptr),       // Instance handle
+        nullptr                         // Additional application data
+    );
+
+    if (hwnd == nullptr) {
+        MessageBox(nullptr, "Window Creation Failed!", "Error", MB_ICONEXCLAMATION | MB_OK);
+        return false;
+    }
+
+    ShowWindow(hwnd, SW_SHOWDEFAULT);
+    UpdateWindow(hwnd);
+
+    MSG msg = {};
+    while (GetMessage(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+        if (g_guiSubmitted || g_guiCancelled) {
+            break; // Exit message loop
+        }
+    }
+
+    if (g_guiSubmitted) {
+        src = g_srcPath;
+        dest = g_destPath;
+        samples = g_samplesDir;
+        w = g_checkboardWidth;
+        h = g_checkboardHeight;
+    }
+
+    return g_guiSubmitted;
 }
+
+// --- WINDOW PROCEDURE ---
+LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+        case WM_CREATE: {
+            int yPos = 20;
+            int xPos = 20;
+            int width = 600;
+            int height = 24;
+            int labelWidth = 150;
+            int editWidth = 450;
+            int gap = 50;
+
+            // Source Image Path
+            CreateWindow("STATIC", "Source Image Path:", WS_VISIBLE | WS_CHILD,
+                         xPos, yPos, labelWidth, height, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            hSrcPathEdit = CreateWindow("EDIT", "example/samples/IMG-0.jpg", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+                                        xPos + labelWidth, yPos, editWidth, height, hwnd, (HMENU)IDC_SRC_PATH_EDIT, GetModuleHandle(nullptr), nullptr);
+            yPos += gap;
+
+            // Destination Image Path
+            CreateWindow("STATIC", "Destination Image Path:", WS_VISIBLE | WS_CHILD,
+                         xPos, yPos, labelWidth, height, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            hDestPathEdit = CreateWindow("EDIT", "undistorted.jpg", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+                                         xPos + labelWidth, yPos, editWidth, height, hwnd, (HMENU)IDC_DEST_PATH_EDIT, GetModuleHandle(nullptr), nullptr);
+            yPos += gap;
+
+            // Samples Directory
+            CreateWindow("STATIC", "Samples Directory:", WS_VISIBLE | WS_CHILD,
+                         xPos, yPos, labelWidth, height, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            hSamplesDirEdit = CreateWindow("EDIT", "example/samples", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL,
+                                           xPos + labelWidth, yPos, editWidth, height, hwnd, (HMENU)IDC_SAMPLES_DIR_EDIT, GetModuleHandle(nullptr), nullptr);
+            yPos += gap;
+
+            // Checkboard Width
+            CreateWindow("STATIC", "Checkboard Width (cols):", WS_VISIBLE | WS_CHILD,
+                         xPos, yPos, labelWidth, height, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            hWidthEdit = CreateWindow("EDIT", "9", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+                                      xPos + labelWidth, yPos, editWidth / 2, height, hwnd, (HMENU)IDC_CHECKBOARD_WIDTH_EDIT, GetModuleHandle(nullptr), nullptr);
+            yPos += gap;
+
+            // Checkboard Height
+            CreateWindow("STATIC", "Checkboard Height (rows):", WS_VISIBLE | WS_CHILD,
+                         xPos, yPos, labelWidth, height, hwnd, nullptr, GetModuleHandle(nullptr), nullptr);
+            hHeightEdit = CreateWindow("EDIT", "6", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+                                       xPos + labelWidth, yPos, editWidth / 2, height, hwnd, (HMENU)IDC_CHECKBOARD_HEIGHT_EDIT, GetModuleHandle(nullptr), nullptr);
+            yPos += gap + 20;
+
+            // Start Button
+            CreateWindow("BUTTON", "Start Calibration", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+                         xPos, yPos, width, 40, hwnd, (HMENU)IDC_START_BUTTON, GetModuleHandle(nullptr), nullptr);
+
+            break;
+        }
+        case WM_COMMAND: {
+            if (LOWORD(wParam) == IDC_START_BUTTON) {
+                char buffer[MAX_PATH]; // Use MAX_PATH for paths, smaller for numbers
+
+                GetWindowText(hSrcPathEdit, buffer, MAX_PATH);
+                g_srcPath = buffer;
+
+                GetWindowText(hDestPathEdit, buffer, MAX_PATH);
+                g_destPath = buffer;
+
+                GetWindowText(hSamplesDirEdit, buffer, MAX_PATH);
+                g_samplesDir = buffer;
+
+                GetWindowText(hWidthEdit, buffer, 10); // Checkboard dimensions are small
+                try {
+                    g_checkboardWidth = std::stoi(buffer);
+                } catch (const std::exception& e) {
+                    MessageBox(hwnd, ("Invalid width input: " + std::string(e.what())).c_str(), "Error", MB_ICONERROR | MB_OK);
+                    return 0;
+                }
+
+                GetWindowText(hHeightEdit, buffer, 10);
+                try {
+                    g_checkboardHeight = std::stoi(buffer);
+                } catch (const std::exception& e) {
+                    MessageBox(hwnd, ("Invalid height input: " + std::string(e.what())).c_str(), "Error", MB_ICONERROR | MB_OK);
+                    return 0;
+                }
+
+                g_guiSubmitted = true;
+                DestroyWindow(hwnd); // Close the GUI window
+            }
+            break;
+        }
+        case WM_CLOSE:
+            g_guiCancelled = true;
+            DestroyWindow(hwnd);
+            break;
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            break;
+        default:
+            return DefWindowProc(hwnd, message, wParam, lParam);
+    }
+    return 0;
+}
+
 
 // --- EXISTING CALIBRATION LOGIC ---
 
@@ -197,9 +234,11 @@ int main(int argc, char** argv) {
 
     if (useGui) {
         std::cout << "Launching GUI..." << std::endl;
-        if (!runGuiMode(srcPath, destPath, samplesDir, checkboardWidth, checkboardHeight)) {
+        // The main function will not exit until the GUI window is closed.
+        // It relies on g_guiSubmitted and g_guiCancelled globals set by WndProc.
+        if (!runWinGuiMode(srcPath, destPath, samplesDir, checkboardWidth, checkboardHeight)) {
             std::cout << "GUI cancelled or exited." << std::endl;
-            return 0;
+            return 0; // Exit if GUI was cancelled or failed to initialize
         }
     }
     else if (argc > 1 && (std::string(argv[1]) == "--interactive" || std::string(argv[1]) == "-i")) {
@@ -210,12 +249,19 @@ int main(int argc, char** argv) {
         checkboardWidth = std::stoi(promptForInput("Enter checkboard width: "));
         checkboardHeight = std::stoi(promptForInput("Enter checkboard height: "));
     } else {
-        if (argc != 6) {
+        if (argc < 6 || argc > 7) { // 6 arguments for normal, 7 if first is -gui (which is handled above)
             std::cout << "Usage: ./fisheye <src_image> <dest_image> <samples_dir> <checkboard_width> <checkboard_height>" << std::endl;
             std::cout << "Or: ./fisheye -i (Interactive Mode)" << std::endl;
             std::cout << "Or: ./fisheye -gui (Window Mode)" << std::endl;
             return 1;
         }
+        // Handle direct arguments if not GUI or interactive
+        int argOffset = 0; // No offset if not -gui
+        if (std::string(argv[1]) == "-gui") { // If -gui is present but not handled (e.g. if more args given later)
+            std::cerr << "Error: -gui option should be used alone. Exiting." << std::endl;
+            return 1;
+        }
+
         srcPath = argv[1];
         destPath = argv[2];
         samplesDir = argv[3];
@@ -304,20 +350,37 @@ int main(int argc, char** argv) {
     // K is used for both original and new camera matrix to keep the scale
     cv::fisheye::undistortImage(distorted, undistorted, K, D, K, distorted.size());
 
-    // 4. Save
-    if (cv::imwrite(destPath, undistorted)) {
-        std::cout << "Saved to " << destPath << std::endl;
-        // Show result if in GUI mode
-        if (useGui) {
-            cv::imshow("Result", undistorted);
-            std::cout << "Press any key to exit..." << std::endl;
-            cv::waitKey(0);
+        // 4. Save
+
+        if (cv::imwrite(destPath, undistorted)) {
+
+            std::cout << "Saved to " << destPath << std::endl;
+
+            // Show result if in GUI mode
+
+            if (useGui) {
+
+                // In WinAPI GUI mode, we should perhaps show the image in a new window
+
+                // or inform the user it's saved. For simplicity, just confirmation.
+
+                MessageBox(nullptr, ("Image saved to: " + destPath).c_str(), "Success", MB_OK | MB_ICONINFORMATION);
+
+            }
+
+        } else {
+
+            std::cerr << "Failed to save image to " << destPath << std::endl;
+
+            if(useGui) MessageBox(nullptr, ("Failed to save image to: " + destPath).c_str(), "Error", MB_OK | MB_ICONERROR);
+
+            return 1;
+
         }
-    } else {
-        std::cerr << "Failed to save image to " << destPath << std::endl;
-        if(useGui) std::system("pause");
-        return 1;
+
+
+
+        return 0;
+
     }
 
-    return 0;
-}
