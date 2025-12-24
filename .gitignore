@@ -26,3 +26,5 @@ node-fisheye.zip
 libopencv_highgui455.dll
 undistorted.jpg
 .data
+release_*.zip
+example/output/IMG-0_undistored.jpg
